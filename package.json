@@ -1,0 +1,16 @@
+{
+  "name": "mdshare",
+  "version": "1.0.0",
+  "description": "Dich vu chia se file markdown qua URL, khong can auth",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "@libsql/client": "^0.14.0",
+    "express-rate-limit": "^7.4.0",
+    "nanoid": "^3.3.7"
+  }
+}
