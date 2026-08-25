@@ -10,7 +10,9 @@
   "dependencies": {
     "express": "^4.19.2",
     "@libsql/client": "^0.14.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "express-rate-limit": "^7.4.0",
-    "nanoid": "^3.3.7"
+    "nanoid": "^3.3.7",
+    "zod": "^3.23.8"
   }
 }

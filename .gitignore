@@ -2,4 +2,3 @@ node_modules/
 *.sqlite3
 server.log
 .env
-*.zip

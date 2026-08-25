@@ -5,11 +5,43 @@ Dịch vụ chia sẻ file Markdown tối giản, không cần auth. Tương t�
 Dùng **Turso (libSQL)** làm nơi lưu trữ thay vì SQLite file cục bộ, vì Render free tier
 không có persistent disk — filesystem bị xoá mỗi khi service sleep/restart.
 
+Tích hợp sẵn **MCP server** ngay trong cùng 1 process — cho phép AI chat (Claude, ChatGPT,
+Grok...) gọi tool `publish_markdown` / `fetch_markdown` để đăng/đọc nội dung trực tiếp,
+không cần người dùng tải file về máy rồi tự `curl` lên.
+
 ## Kiến trúc dữ liệu
 
 - `POST /` → sinh khóa ngẫu nhiên 8 ký tự (`a-z0-9`), lưu nội dung vào bảng `pastes` trên Turso.
 - `GET /p/:key/raw` → trả nguyên văn nội dung, `Content-Type: text/plain`.
 - `GET /p/:key` → trang xem tối giản, escape HTML, không render markdown → HTML (tránh XSS).
+- `POST /mcp` → endpoint MCP (Streamable HTTP), expose 2 tool cho AI chat gọi trực tiếp.
+
+**Vì sao gộp MCP vào cùng 1 service thay vì tách riêng:** thiết kế ban đầu tách MCP thành
+service riêng, gọi `fetch()` HTTP sang service `mdshare` chính. Trên Render free tier, khi
+cả 2 service đều "ngủ" (sau 15 phút không traffic), request nội bộ giữa chúng dễ bị timeout
+ở tầng proxy của Render và trả về lỗi 502, dù mỗi service gọi trực tiếp từ ngoài vẫn hoạt
+động bình thường (đây là cold-start-kép: chờ 2 lần đánh thức container tuần tự). Gộp lại
+thành 1 process loại bỏ hoàn toàn request nội bộ đó — tool MCP gọi thẳng hàm JavaScript nội
+bộ, không qua mạng.
+
+## 2 tool MCP được cung cấp
+
+- **`publish_markdown(content)`** — đăng nội dung markdown, trả về URL xem và URL raw.
+- **`fetch_markdown(key_or_url)`** — tải lại nội dung 1 paste đã đăng, dựa vào key hoặc URL
+  (chấp nhận cả `domain/p/key` và `domain/p/key/raw`). Đây là fallback quan trọng: một số
+  AI chat (ghi nhận với ChatGPT) không tự fetch được URL trả về `Content-Type: text/plain`
+  thuần — trình duyệt-tool tích hợp của client có thể coi 1 file text thuần là "file tải
+  xuống" thay vì trang đọc được. Khi gặp tình huống đó, yêu cầu AI chat gọi tool
+  `fetch_markdown` thay vì tự mở URL.
+
+## Nền tảng nào hỗ trợ custom MCP server? (thông tin tại thời điểm viết, có thể thay đổi)
+
+| Nền tảng | Hỗ trợ custom remote MCP? | Ghi chú |
+|---|---|---|
+| Claude | Có | Tất cả các gói, kể cả free |
+| ChatGPT | Có | Cần bật Developer Mode, gói trả phí (Plus/Pro/Business/Enterprise/Edu) |
+| Grok | Có | Gói trả phí, mục "Bring Your Own MCP" tại grok.com/connectors |
+| Qwen, DeepSeek, Kimi, z.ai (GLM), Manus, Meta AI | Chưa rõ / có thể chưa hỗ trợ ở chat UI tiêu dùng | Kiểm tra trực tiếp Settings/Connectors của nền tảng đó |
 
 ## Bước 1 — Tạo database Turso miễn phí
 
@@ -70,6 +102,25 @@ curl -X POST --data-binary @test.md https://ten-app.onrender.com/
 curl https://ten-app.onrender.com/p/KEY_TRA_VE/raw
 ```
 
+## Bước 4 — Kết nối MCP vào AI chat
+
+1. Vào **claude.ai → Settings → Connectors → Add custom connector** (hoặc mục tương đương
+   ở ChatGPT/Grok — xem bảng hỗ trợ ở trên).
+2. Nhập URL: `https://ten-app.onrender.com/mcp`
+3. Đặt tên gợi nhớ, ví dụ "mdshare".
+
+Sau đó trong chat bật connector lên, yêu cầu ví dụ:
+> "Tóm tắt nội dung trên thành markdown rồi đăng lên mdshare cho tôi"
+
+Test thủ công (không qua AI chat) trên `cmd`:
+```cmd
+curl -X POST https://ten-app.onrender.com/mcp ^
+  -H "Content-Type: application/json" ^
+  -H "Accept: application/json, text/event-stream" ^
+  -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}"
+```
+Kết quả phải chứa 2 tool `publish_markdown` và `fetch_markdown`.
+
 ## Chạy thử ở máy local (trước khi deploy)
 
 ```bash
@@ -98,6 +149,15 @@ chỉ có độ trễ ở request đầu tiên. Với dùng cá nhân, điều n
 
 Chỉnh trong `server.js` (biến `writeLimiter`, `readLimiter`).
 
+## Bảo mật cần lưu ý
+
+- Endpoint `/mcp` **không có xác thực** — bất kỳ ai biết URL đều gọi được 2 tool để đăng/đọc
+  nội dung trên `mdshare` của bạn. Với dùng cá nhân, rủi ro thấp (URL không công khai, khó
+  đoán qua subdomain ngẫu nhiên của Render). Nếu muốn chặt hơn, có thể thêm kiểm tra 1 header
+  bí mật trước khi xử lý request tại route `/mcp` trong `server.js`.
+- `mdshare` vốn đã không có auth theo thiết kế ban đầu, nên MCP tool chỉ tự động hoá lại đúng
+  hành vi thủ công qua `curl` — không mở thêm rủi ro mới ở phía dữ liệu.
+
 ## Cơ sở lý luận cho các lựa chọn thiết kế
 
 - **Turso thay SQLite file cục bộ**: Render free tier không cấp persistent volume,
@@ -110,4 +170,3 @@ Chỉnh trong `server.js` (biến `writeLimiter`, `readLimiter`).
   Server vẫn kiểm tra tồn tại trước khi ghi để loại trừ hoàn toàn rủi ro va chạm.
 - **Không render markdown → HTML mặc định**: giảm bề mặt tấn công XSS. Trang xem chỉ
   escape và hiển thị trong thẻ `<pre>`.
-"# mdshare" 
